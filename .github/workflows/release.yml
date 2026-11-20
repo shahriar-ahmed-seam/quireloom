@@ -1,0 +1,99 @@
+name: Release Quireloom
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Ensure WiX Toolset for jpackage
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wix = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+            if (Test-Path $wix) {
+              "$wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            } else {
+              choco install wixtoolset -y --no-progress
+              "$wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            }
+          }
+
+      - name: Build Quireloom JAR & ICO
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path build/classes/io/quireloom/app, build/input, build/dist | Out-Null
+          $javaFiles = @(
+            "app/src/main/java/io/quireloom/app/Epub.java",
+            "app/src/main/java/io/quireloom/app/Manuscript.java"
+          ) + (Get-ChildItem -Path "linux/src/io/quireloom/app/*.java" | ForEach-Object { $_.FullName })
+          & javac --release 17 -encoding UTF-8 -Xlint:all,-serial -d build/classes @javaFiles
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "linux/package/quireloom.png" "build/classes/io/quireloom/app/icon.png"
+          Copy-Item "linux/package/xhtml-entities.dtd" "build/classes/io/quireloom/app/"
+          & jar --create --file build/input/quireloom.jar --main-class io.quireloom.app.DesktopApp -C build/classes .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          python -c "
+          import struct
+          from pathlib import Path
+          png = Path('linux/package/quireloom.png').read_bytes()
+          header = struct.pack('<HHH', 0, 1, 1)
+          entry = struct.pack('<BBBBHHII', 128, 128, 0, 0, 1, 32, len(png), 22)
+          Path('build/quireloom.ico').write_bytes(header + entry + png)
+          "
+
+      - name: Package Windows EXE Installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $ver = $tag.TrimStart('v')
+          & jpackage `
+            --type exe `
+            --name Quireloom `
+            --app-version $ver `
+            --vendor "Quireloom Project" `
+            --description "Offline EPUB 3.3 studio, omnibus merger, cover designer and package editor" `
+            --input build/input `
+            --main-jar quireloom.jar `
+            --main-class io.quireloom.app.DesktopApp `
+            --icon build/quireloom.ico `
+            --win-dir-chooser `
+            --win-menu `
+            --win-shortcut `
+            --win-per-user-install `
+            --dest build/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Get-ChildItem -Path build/dist -Filter "*.exe" | Select-Object -First 1
+          Move-Item $exe.FullName "build/dist/Quireloom-$ver-windows-x64.exe" -Force
+
+      - name: Upload Windows EXE to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $ver = $tag.TrimStart('v')
+          gh release upload $tag "build/dist/Quireloom-$ver-windows-x64.exe" --clobber

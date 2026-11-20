@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Quireloom
+Comment=Offline EPUB 3.3 studio, omnibus merger, cover designer and package editor
+Exec=quireloom %F
+Icon=io.quireloom.Quireloom
+Terminal=false
+Categories=Office;WordProcessor;Publishing;
+MimeType=application/epub+zip;text/markdown;text/plain;
+StartupNotify=false

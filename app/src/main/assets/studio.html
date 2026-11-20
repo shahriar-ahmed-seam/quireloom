@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self' about:; form-action 'none'; base-uri 'none'">
+  <title>Quireloom</title>
+  <link rel="stylesheet" href="/studio.css">
+  <script src="/studio.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="shell masthead-inner">
+      <button class="brand" id="home" aria-label="Quireloom workspace">
+        <img src="/quireloom.png" alt=""><span>Quireloom</span>
+      </button>
+      <div class="masthead-actions">
+        <button class="icon" id="themeToggle" aria-label="Switch color theme" title="Switch color theme">◐</button>
+        <button class="button library-button" data-command="library">My books</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell" id="workspace" aria-busy="true">
+    <section id="bookPage" aria-label="Book workspace">
+      <div class="book-overview">
+        <button id="coverTile" class="cover-tile" aria-label="Edit book cover">
+          <img id="coverImage" alt="" hidden><span id="coverPlaceholder"><span class="cover-mark">Q</span><span>Add cover</span></span>
+        </button>
+        <div class="book-info">
+          <h1 id="bookTitle">Untitled manuscript</h1>
+          <p class="book-author" id="bookAuthor" hidden></p>
+          <p class="muted" id="bookStats">0 chapters · 0 words</p>
+          <button class="text-button" id="showPacing">Statistics &amp; pacing</button>
+        </div>
+      </div>
+      <div class="book-commands">
+        <button class="button" data-command="new">New book</button>
+        <button class="button" data-command="open">Open file</button>
+        <button class="button primary" data-command="epub">Export EPUB</button>
+      </div>
+      <section class="chapters">
+        <div class="section-heading">
+          <div><h2>Chapters</h2><p class="muted" id="chapterCount"></p></div>
+          <button class="button primary" id="addChapter">＋ Chapter</button>
+        </div>
+        <div class="import-actions">
+          <button class="text-button" data-command="import">Import files</button>
+          <button class="text-button" id="pasteBook">Paste manuscript</button>
+          <button class="text-button" data-command="plates">Add image plates</button>
+        </div>
+        <ol id="chapterList"></ol>
+        <div class="empty" id="emptyBook"><strong>Start with a blank chapter</strong><p>Add Markdown, text, EPUB, PDF, or images from Files, or paste manuscript text.</p></div>
+        <div class="book-history" id="bookHistory" hidden>
+          <button class="text-button" data-history="undo">Undo</button>
+          <button class="text-button" data-history="redo">Redo</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="writePage" aria-label="Chapter editor" hidden>
+      <div class="editor-top">
+        <button class="text-button" id="backToBook">‹ Chapters</button>
+        <div class="header-actions">
+          <button class="icon" data-history="undo" aria-label="Undo" title="Undo">↶</button>
+          <button class="icon" data-history="redo" aria-label="Redo" title="Redo">↷</button>
+          <button class="button" id="focusToggle" aria-pressed="false">Focus</button>
+        </div>
+      </div>
+      <label class="sr-only" for="chapterTitle">Chapter title</label>
+      <input id="chapterTitle" class="chapter-title" autocomplete="off" placeholder="Chapter title">
+      <p id="chapterStats" class="muted"></p>
+      <div class="editor-layout" id="editorLayout">
+        <div class="paper">
+          <div class="format-bar" id="formatBar" role="group" aria-label="Manuscript formatting"></div>
+          <label for="manuscript" class="sr-only">Manuscript</label>
+          <textarea id="manuscript" placeholder="Begin writing…" spellcheck="true"></textarea>
+        </div>
+        <iframe id="livePreview" src="about:blank" sandbox="allow-same-origin" title="Live chapter preview" hidden></iframe>
+      </div>
+      <div class="editor-options">
+        <button class="button" id="liveToggle" aria-pressed="false">Live preview</button>
+        <button class="button" data-command="chapterPreview">Read chapter</button>
+        <button class="button" id="findChapter">Find &amp; replace</button>
+        <button class="button" id="chapterMenu">Chapter actions</button>
+      </div>
+      <div class="editor-settings">
+        <label class="field inline">Role <select id="chapterRole"></select></label>
+        <label class="check"><input id="markdown" type="checkbox"> Markdown</label>
+        <label class="check"><input id="hideHeading" type="checkbox"> Hide heading</label>
+      </div>
+    </section>
+
+    <section id="designPage" aria-label="Book design" hidden>
+      <h1>Book design</h1>
+      <details class="panel" open>
+        <summary>Book details</summary><div class="field-grid" id="metadata"></div>
+      </details>
+      <details class="panel">
+        <summary>Typography &amp; pages</summary><div class="field-grid" id="designOptions"></div>
+        <div class="detail-action"><button class="button" id="styleSample">Preview typography</button></div>
+      </details>
+      <section class="panel cover-panel" id="coverPanel">
+        <h2>Cover</h2>
+        <div class="action-grid">
+          <button class="button primary" data-command="designCover">Cover Designer</button>
+          <button class="button" data-command="cover">Choose image</button>
+          <button class="button" data-command="exportCover">Export cover</button>
+          <button class="button danger" data-command="removeCover">Remove cover</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="publishPage" aria-label="Publishing desk" hidden>
+      <h1>Publishing desk</h1>
+      <div id="publishingTools"></div>
+    </section>
+  </main>
+
+  <nav class="navigation" aria-label="Workspace">
+    <div class="shell tabs" id="tabs"></div>
+  </nav>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <div id="working" role="status"><div><span class="spinner" aria-hidden="true"></span><span id="workingText">Opening workspace…</span></div></div>
+
+  <dialog id="modal" aria-labelledby="modalTitle">
+    <div class="modal-heading"><h2 id="modalTitle"></h2><button class="icon" id="closeModal" aria-label="Close dialog">×</button></div>
+    <div id="modalContent" class="modal-content"></div>
+    <div id="modalActions" class="modal-actions"></div>
+  </dialog>
+  <datalist id="sceneOrnaments">
+    <option value="* * *"><option value="❦"><option value="§"><option value="◆ ◆ ◆"><option value="— ✦ —"><option value="• • •">
+  </datalist>
+</body>
+</html>

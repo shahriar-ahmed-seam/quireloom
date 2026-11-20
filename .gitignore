@@ -1,0 +1,9 @@
+.gradle/
+build/
+local.properties
+*.apk
+*.deb
+*.zip
+*.exe
+.idea/
+linux/build/

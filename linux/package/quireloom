@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+program_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+java_command=java
+if [ -f "$program_dir/quireloom.jar" ]; then
+    jar="$program_dir/quireloom.jar"
+else
+    jar="$program_dir/../share/quireloom/quireloom.jar"
+fi
+
+case "${1:-}" in
+    build|merge|split|check|fix|info|--version|-v|--help|-h|help)
+        if ! command -v "$java_command" >/dev/null 2>&1; then
+            printf '%s\n' 'Quireloom requires Java 17 or newer.' >&2
+            exit 1
+        fi
+        exec "$java_command" -Djava.awt.headless=true -jar "$jar" "$@"
+        ;;
+esac
+
+# Desktop GUI mode: prefer a non-headless JDK runtime if one is installed.
+if [ ! -f "$program_dir/quireloom.jar" ]; then
+    for jvm in /usr/lib/jvm/java-21-openjdk-* /usr/lib/jvm/java-17-openjdk-*; do
+        if [ -x "$jvm/bin/java" ] && [ -f "$jvm/lib/libawt_xawt.so" ]; then
+            java_command="$jvm/bin/java"
+            break
+        fi
+    done
+fi
+if ! command -v "$java_command" >/dev/null 2>&1; then
+    printf '%s\n' 'Quireloom requires a Java 17 or newer desktop runtime.' >&2
+    exit 1
+fi
+exec "$java_command" -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true -jar "$jar" "$@"
