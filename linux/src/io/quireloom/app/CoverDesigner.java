@@ -5,16 +5,15 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -426,14 +425,14 @@ final class CoverDesigner {
         serifBox.addActionListener(e -> refresh.run());
 
         var pickPhoto = UiTheme.secondaryButton("Choose background photo…", () -> {
-            var chooser = new JFileChooser();
-            chooser.setFileFilter(new FileNameExtensionFilter("PNG and JPEG images", "png", "jpg", "jpeg"));
-            if (chooser.showOpenDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+            Path chosen = FilePickers.pickOpenFile(dialog, "Choose background photo", null,
+                "PNG and JPEG images", "png", "jpg", "jpeg");
+            if (chosen != null) {
                 try {
-                    BufferedImage loaded = ImageIO.read(chooser.getSelectedFile());
+                    BufferedImage loaded = ImageIO.read(chosen.toFile());
                     if (loaded == null) throw new IOException("Unreadable image.");
                     photo[0] = loaded;
-                    photoStatus.setText(chooser.getSelectedFile().getName());
+                    photoStatus.setText(chosen.getFileName().toString());
                     templateBox.setSelectedItem(Template.PHOTO);
                     refresh.run();
                 } catch (IOException error) {
@@ -467,15 +466,14 @@ final class CoverDesigner {
         var buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         buttons.setOpaque(false);
         buttons.add(UiTheme.secondaryButton("Export PNG…", () -> {
-            var chooser = new JFileChooser();
-            chooser.setSelectedFile(new File("cover.png"));
-            if (chooser.showSaveDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+            Path out = FilePickers.pickSaveFile(dialog, "Export Cover PNG", null, "cover.png", "png", "PNG images", "png");
+            if (out != null) {
                 try {
                     var spec = new Spec((Template) templateBox.getSelectedItem(), (Palette) paletteBox.getSelectedItem(),
                         titleField.getText(), subtitleField.getText(), authorField.getText(),
                         seriesField.getText(), pubField.getText(), serifBox.isSelected(), photo[0]);
                     var rendered = renderEpubImage(spec);
-                    Files.write(chooser.getSelectedFile().toPath(), rendered.bytes());
+                    Files.write(out, rendered.bytes());
                     JOptionPane.showMessageDialog(dialog, "Exported 1600×2560 high-res cover PNG.");
                 } catch (IOException ex) {
                     JOptionPane.showMessageDialog(dialog, ex.getMessage(), "Export Failed", JOptionPane.ERROR_MESSAGE);

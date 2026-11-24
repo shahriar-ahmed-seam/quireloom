@@ -4,7 +4,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 build="$root/linux/build"
 stage="$build/deb"
 shared="$root/app/src/main/java/io/quireloom/app"
-version=1.0.0
+version=1.0.1
 mkdir -p "$build"
 rm -rf "$stage"
 work=$(mktemp -d "$build/.compile.XXXXXX")
@@ -31,7 +31,7 @@ Priority: optional
 Architecture: all
 Maintainer: Quireloom Project
 Depends: openjdk-17-jre | openjdk-21-jre | java17-runtime
-Recommends: poppler-utils
+Recommends: poppler-utils, zenity
 Description: Offline EPUB 3.3 studio, omnibus merger, cover designer & package editor
  Author manuscripts in Markdown or plain text, import rich EPUBs with covers
  and illustrations, design bookstore-grade covers, losslessly merge or split

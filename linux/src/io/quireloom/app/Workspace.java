@@ -5,7 +5,6 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.undo.UndoManager;
 import java.awt.*;
 import java.awt.datatransfer.DataFlavor;
@@ -19,7 +18,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.List;
@@ -94,7 +92,7 @@ final class Workspace extends JPanel {
     private final JButton delete = UiTheme.dangerButton("Delete", this::delete);
 
     private final Map<String, Image> scaledPreviewCache = new HashMap<>();
-    private final Path draftPath;
+    private Path draftPath;
     private final ExecutorService storage = Executors.newSingleThreadExecutor();
     private final javax.swing.Timer autosave = new javax.swing.Timer(650, e -> save(false, () -> {}));
 
@@ -108,13 +106,14 @@ final class Workspace extends JPanel {
     private Runnable pendingClose;
     private boolean dirty;
     private long changes;
-    private final boolean saveEnabled;
+    private boolean saveEnabled;
     private Path lastFolder;
+    private java.util.function.Predicate<Path> saveAsHandler;
 
     Workspace(Path draftPath, Draft draft, boolean saveEnabled) {
         super(new BorderLayout(0, 10));
         this.draftPath = draftPath;
-        this.saveEnabled = saveEnabled;
+        this.saveEnabled = saveEnabled && draftPath != null;
         this.extraMeta = draft.metadata();
         this.bookOptions = draft.options();
         this.cover = draft.cover();
@@ -160,7 +159,10 @@ final class Workspace extends JPanel {
         watch(author, this::changed);
         watch(language, this::changed);
         watch(chapterTitle, () -> updateChapter(true));
-        watch(body, () -> updateChapter(false));
+        watch(body, () -> {
+            updateChapter(false);
+            if (findBar.isVisible()) updateFindCount();
+        });
         body.getDocument().addUndoableEditListener(e -> {
             if (!loading) textUndo.addEdit(e.getEdit());
         });
@@ -170,9 +172,24 @@ final class Workspace extends JPanel {
             if (!loading) updateChapter(true);
         });
 
-        if (!saveEnabled) {
+        if (draftPath == null) {
+            status.setText("Ready · New manuscript (Ctrl+S to save draft, Ctrl+E to export EPUB)");
+        } else if (!saveEnabled) {
             status.setText("Saved draft could not be opened. Autosave is disabled for this session.");
         }
+    }
+
+    void setSaveAsHandler(java.util.function.Predicate<Path> handler) {
+        this.saveAsHandler = handler;
+    }
+
+    void attachDraftPath(Path path) {
+        this.draftPath = path;
+        this.saveEnabled = path != null;
+    }
+
+    boolean isCleanEmpty() {
+        return !dirty && chapters.isEmpty() && title.getText().isBlank() && author.getText().isBlank() && cover == null;
     }
 
     private JPanel buildHeader() {
@@ -350,6 +367,7 @@ final class Workspace extends JPanel {
         var emptyBtns = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 12));
         emptyBtns.setOpaque(false);
         emptyBtns.add(UiTheme.primaryButton("+ New Chapter", this::addBlank));
+        emptyBtns.add(UiTheme.secondaryButton("Open Book…", () -> DesktopApp.chooseBook(this, false)));
         emptyBtns.add(UiTheme.secondaryButton("Import Files…", this::chooseFiles));
         emptyBtns.add(UiTheme.secondaryButton("Paste Manuscript…", this::paste));
         emptyInner.add(emptyHeading);
@@ -420,6 +438,8 @@ final class Workspace extends JPanel {
             body.requestFocusInWindow();
         }));
         findField.addActionListener(e -> findNext(true));
+        findCase.addActionListener(e -> updateFindCount());
+        findRegex.addActionListener(e -> updateFindCount());
         findField.getDocument().addDocumentListener(new DocumentListener() {
             public void insertUpdate(DocumentEvent e) { updateFindCount(); }
             public void removeUpdate(DocumentEvent e) { updateFindCount(); }
@@ -611,7 +631,10 @@ final class Workspace extends JPanel {
         int caret = body.getCaretPosition();
         int[] pick = null;
         if (forward) {
-            for (var pair : matches) if (pair[0] >= caret) { pick = pair; break; }
+            int startFrom = (body.getSelectionStart() == body.getSelectionEnd() && body.getSelectionStart() == caret
+                && matches.stream().anyMatch(pair -> pair[0] == caret && pair[1] == caret))
+                ? caret + 1 : caret;
+            for (var pair : matches) if (pair[0] >= startFrom) { pick = pair; break; }
             if (pick == null) pick = matches.get(0);
         } else {
             int selStart = body.getSelectionStart();
@@ -923,13 +946,22 @@ final class Workspace extends JPanel {
     void previewInBrowser() {
         if (busy || chapters.isEmpty()) return;
         try {
-            Draft snap = snapshot();
-            if (snap.title().isBlank()) {
-                snap = new Draft(new Epub.Metadata(snap.id(), "Book Preview", snap.metadata().subtitle(),
-                    snap.author(), snap.language(), snap.metadata().description(), snap.metadata().publisher(),
-                    snap.metadata().subjects(), snap.metadata().series(), snap.metadata().seriesIndex(),
-                    snap.metadata().rights(), snap.metadata().date()), snap.chapters(), snap.cover(), snap.options());
+            Draft rawSnap = snapshot();
+            String previewTitle = rawSnap.title().isBlank() ? "Book Preview" : rawSnap.title();
+            var previewChapters = new ArrayList<Epub.Chapter>(rawSnap.chapters().size());
+            for (int i = 0; i < rawSnap.chapters().size(); i++) {
+                var ch = rawSnap.chapters().get(i);
+                if (ch.title().isBlank()) {
+                    previewChapters.add(new Epub.Chapter("Chapter " + (i + 1), ch.body(), ch.markdown(),
+                        ch.images(), ch.role(), ch.hideHeading()));
+                } else {
+                    previewChapters.add(ch);
+                }
             }
+            Draft snap = new Draft(new Epub.Metadata(rawSnap.id(), previewTitle, rawSnap.metadata().subtitle(),
+                rawSnap.author(), rawSnap.language(), rawSnap.metadata().description(), rawSnap.metadata().publisher(),
+                rawSnap.metadata().subjects(), rawSnap.metadata().series(), rawSnap.metadata().seriesIndex(),
+                rawSnap.metadata().rights(), rawSnap.metadata().date()), previewChapters, rawSnap.cover(), rawSnap.options());
             Path temp = Files.createTempFile("quireloom-preview-", ".html");
             temp.toFile().deleteOnExit();
             snap.exportHtml(temp);
@@ -948,15 +980,12 @@ final class Workspace extends JPanel {
 
     private void chooseFiles() {
         if (busy) return;
-        var chooser = chooser("Add chapters to this book",
+        var picked = FilePickers.pickOpenFiles(this, "Add chapters to this book", lastFolder,
+            "<html>EPUB import preserves formatting,<br>illustrations, cover &amp; metadata.<br>PDFs import text or pages.</html>",
             "EPUB, Markdown, TXT, PDF & Images", "epub", "md", "markdown", "txt", "pdf", "png", "jpg", "jpeg", "gif", "webp");
-        chooser.setMultiSelectionEnabled(true);
-        var note = new JLabel("<html>EPUB import preserves formatting,<br>illustrations, cover &amp; metadata.<br>PDFs import text or pages.</html>");
-        note.setBorder(new EmptyBorder(12, 10, 12, 7));
-        chooser.setAccessory(note);
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            lastFolder = chooser.getCurrentDirectory().toPath();
-            importPaths(Arrays.stream(chooser.getSelectedFiles()).map(File::toPath).toList());
+        if (!picked.isEmpty()) {
+            lastFolder = picked.get(0).getParent();
+            importPaths(picked);
         }
     }
 
@@ -1135,8 +1164,7 @@ final class Workspace extends JPanel {
             markdown.isSelected(), old.images(), role, hideHeading.isSelected());
         if (updated.equals(old)) return;
         chapters.set(index, updated);
-        if (editSplit.getRightComponent() != null || metadataOrTitleChanged) previewDelay.restart();
-        else previewDelay.restart();
+        previewDelay.restart();
         changed();
     }
 
@@ -1291,9 +1319,9 @@ final class Workspace extends JPanel {
             String expr = query.getText();
             if (!regex.isSelected()) {
                 expr = Pattern.quote(expr);
-                if (wholeWord.isSelected()) expr = "\\b" + expr + "\\b";
-            } else if (wholeWord.isSelected()) {
-                expr = "\\b(?:" + expr + ")\\b";
+            }
+            if (wholeWord.isSelected()) {
+                expr = "(?<![\\p{L}\\p{M}\\p{N}_])(?:" + expr + ")(?![\\p{L}\\p{M}\\p{N}_])";
             }
             var pattern = Pattern.compile(expr, flags);
             String value = regex.isSelected() ? replacement.getText() : Matcher.quoteReplacement(replacement.getText());
@@ -1381,13 +1409,12 @@ final class Workspace extends JPanel {
             report("Insert illustrations", "Create or select a chapter first.");
             return;
         }
-        var picker = chooser(standalone ? "Add image plate chapters" : "Insert illustrations at cursor",
-            "PNG, JPEG, GIF & WebP images", "png", "jpg", "jpeg", "gif", "webp");
-        picker.setMultiSelectionEnabled(true);
-        if (picker.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        lastFolder = picker.getCurrentDirectory().toPath();
-        var paths = Arrays.stream(picker.getSelectedFiles())
-            .sorted((a, b) -> Manuscript.compareNames(a.getName(), b.getName())).toList();
+        var paths = FilePickers.pickOpenFiles(this,
+            standalone ? "Add image plate chapters" : "Insert illustrations at cursor", lastFolder, null,
+            "PNG, JPEG, GIF & WebP images", "png", "jpg", "jpeg", "gif", "webp")
+            .stream().sorted((a, b) -> Manuscript.compareNames(a.getFileName().toString(), b.getFileName().toString())).toList();
+        if (paths.isEmpty()) return;
+        lastFolder = paths.get(0).getParent();
         int caret = Math.max(0, body.getCaretPosition());
         long budget = remainingBytes();
         Epub.Chapter targetSnapshot = standalone ? null : chapters.get(index);
@@ -1395,9 +1422,9 @@ final class Workspace extends JPanel {
         runTask("Reading illustrations…", () -> {
             var pages = new ArrayList<Epub.Chapter>();
             long used = 0;
-            for (var file : paths) {
-                var image = BookFiles.readImage(file.toPath());
-                String name = file.getName().replaceFirst("\\.[^.]+$", "").replaceAll("[\\]\\r\\n]", " ").strip();
+            for (var path : paths) {
+                var image = BookFiles.readImage(path);
+                String name = path.getFileName().toString().replaceFirst("\\.[^.]+$", "").replaceAll("[\\]\\r\\n]", " ").strip();
                 if (name.isEmpty()) name = "Illustration";
                 String key = "img-" + UUID.randomUUID() + image.extension();
                 var page = new Epub.Chapter(name, "![" + name + "](" + key + ")", false,
@@ -1444,10 +1471,10 @@ final class Workspace extends JPanel {
 
     void chooseCover() {
         if (busy) return;
-        var chooser = chooser("Choose cover image", "PNG, JPEG, GIF & WebP images", "png", "jpg", "jpeg", "gif", "webp");
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            lastFolder = chooser.getCurrentDirectory().toPath();
-            Path path = chooser.getSelectedFile().toPath();
+        Path path = FilePickers.pickOpenFile(this, "Choose cover image", lastFolder,
+            "PNG, JPEG, GIF & WebP images", "png", "jpg", "jpeg", "gif", "webp");
+        if (path != null) {
+            lastFolder = path.getParent();
             runTask("Reading cover…", () -> BookFiles.readImage(path), this::setCover);
         }
     }
@@ -1490,16 +1517,10 @@ final class Workspace extends JPanel {
             report("Book needs attention", message(error));
             return;
         }
-        var chooser = chooser("Export EPUB 3.3", "EPUB book", "epub");
-        chooser.setSelectedFile(new File(shortField(draft.title().strip().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_"), 60) + ".epub"));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        lastFolder = chooser.getCurrentDirectory().toPath();
-        Path destination = chooser.getSelectedFile().toPath();
-        if (!destination.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".epub")) {
-            destination = destination.resolveSibling(destination.getFileName() + ".epub");
-        }
-        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS) && JOptionPane.showConfirmDialog(this,
-                "Replace the existing file?", "Export EPUB", JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
+        String suggested = shortField(draft.title().strip().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_"), 60) + ".epub";
+        Path destination = FilePickers.pickSaveFile(this, "Export EPUB 3.3", lastFolder, suggested, "epub", "EPUB book", "epub");
+        if (destination == null) return;
+        lastFolder = destination.getParent();
         exportTo(destination);
     }
 
@@ -1523,14 +1544,10 @@ final class Workspace extends JPanel {
         Draft draft = snapshot();
         try { draft.exportLanguage(); }
         catch (IOException error) { report("Book needs attention", message(error)); return; }
-        var chooser = chooser("Export Self-Contained HTML Reader", "HTML document", "html");
-        chooser.setSelectedFile(new File(shortField(draft.title().strip().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_"), 60) + ".html"));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        Path dest = chooser.getSelectedFile().toPath();
-        if (!dest.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".html")) {
-            dest = dest.resolveSibling(dest.getFileName() + ".html");
-        }
-        Path finalDest = dest;
+        String suggested = shortField(draft.title().strip().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_"), 60) + ".html";
+        Path finalDest = FilePickers.pickSaveFile(this, "Export Self-Contained HTML Reader", lastFolder, suggested, "html", "HTML document", "html");
+        if (finalDest == null) return;
+        lastFolder = finalDest.getParent();
         runTask("Exporting HTML Web Reader…", () -> {
             draft.exportHtml(finalDest);
             return finalDest;
@@ -1541,22 +1558,13 @@ final class Workspace extends JPanel {
         if (busy) return;
         Draft draft = snapshot();
         if (draft.chapters().isEmpty()) { report("Export Markdown", "Add at least one chapter first."); return; }
-        var chooser = new JFileChooser(lastFolder == null ? null : lastFolder.toFile());
-        chooser.setDialogTitle("Export Manuscript as Markdown Folder");
-        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        Path dir = chooser.getSelectedFile().toPath();
+        Path dir = FilePickers.pickDirectory(this, "Export Manuscript as Markdown Folder", lastFolder);
+        if (dir == null) return;
+        lastFolder = dir;
         runTask("Exporting Markdown folder…", () -> {
             BookFiles.exportMarkdownFolder(draft, dir);
             return dir;
         }, p -> status.setText("Exported Markdown folder to " + p.getFileName()));
-    }
-
-    private JFileChooser chooser(String label, String description, String... types) {
-        var chooser = new JFileChooser(lastFolder == null ? null : lastFolder.toFile());
-        chooser.setDialogTitle(label);
-        chooser.setFileFilter(new FileNameExtensionFilter(description, types));
-        return chooser;
     }
 
     private void repaintChapterList() { list.repaint(); }
@@ -1616,11 +1624,40 @@ final class Workspace extends JPanel {
     }
 
     void saveNow() {
+        if (draftPath == null) {
+            saveDraftAs();
+            return;
+        }
         save(false, () -> status.setText("Draft saved."));
     }
 
+    boolean saveDraftAs() {
+        if (busy) return false;
+        String base = title.getText().isBlank() ? "Manuscript"
+            : shortField(title.getText().strip().replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_"), 60);
+        Path chosen = FilePickers.pickSaveFile(this, "Save Quireloom Draft", lastFolder,
+            base + ".ql", "ql", "Quireloom drafts (.ql)", "ql");
+        if (chosen == null) return false;
+        lastFolder = chosen.getParent();
+        if (saveAsHandler != null) {
+            boolean saved = saveAsHandler.test(chosen);
+            if (saved) status.setText("Saved draft: " + chosen.getFileName());
+            return saved;
+        }
+        try {
+            snapshot().save(chosen);
+            attachDraftPath(chosen);
+            dirty = false;
+            status.setText("Saved draft: " + chosen.getFileName());
+            return true;
+        } catch (IOException error) {
+            report("Draft could not be saved", message(error));
+            return false;
+        }
+    }
+
     private void save(boolean closing, Runnable done) {
-        if (!saveEnabled || !dirty) {
+        if (!saveEnabled || !dirty || draftPath == null) {
             done.run();
             return;
         }
@@ -1657,6 +1694,15 @@ final class Workspace extends JPanel {
             pendingClose = done;
             status.setText("Finishing the current operation before closing…");
             return;
+        }
+        if (draftPath == null && dirty && !isCleanEmpty() && !GraphicsEnvironment.isHeadless()) {
+            Object[] opts = {"Save Draft…", "Discard", "Cancel"};
+            int choice = JOptionPane.showOptionDialog(this,
+                "This manuscript hasn't been saved to a Quireloom draft (.ql) file yet.",
+                "Save Draft Before Closing?", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE,
+                null, opts, opts[0]);
+            if (choice == 2 || choice == JOptionPane.CLOSED_OPTION) return;
+            if (choice == 0 && !saveDraftAs()) return;
         }
         closing = true;
         busy = true;

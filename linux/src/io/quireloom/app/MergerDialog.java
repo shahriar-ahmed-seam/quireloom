@@ -2,9 +2,7 @@ package io.quireloom.app;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -84,23 +82,20 @@ final class MergerDialog {
 
         final Epub.Image[] customCover = {null};
         var coverLabel = UiTheme.mutedLabel("No custom cover");
-        final File[] lastDir = {null};
+        final Path[] lastDir = {null};
 
         Runnable addFiles = () -> {
-            var chooser = new JFileChooser(lastDir[0]);
-            chooser.setDialogTitle("Add EPUBs, Markdown, TXT, PDFs, or Images");
-            chooser.setMultiSelectionEnabled(true);
-            chooser.setFileFilter(new FileNameExtensionFilter("Books, manuscripts, PDFs & images",
-                "epub", "md", "markdown", "txt", "pdf", "png", "jpg", "jpeg", "gif", "webp"));
-            if (chooser.showOpenDialog(dialog) != JFileChooser.APPROVE_OPTION) return;
-            lastDir[0] = chooser.getCurrentDirectory();
-            var files = Arrays.stream(chooser.getSelectedFiles())
-                .sorted((a, b) -> Manuscript.compareNames(a.getName(), b.getName())).toList();
-            for (File f : files) {
-                var entry = new RowEntry(f.toPath());
-                if (f.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
+            var picked = FilePickers.pickOpenFiles(dialog, "Add EPUBs, Markdown, TXT, PDFs, or Images", lastDir[0], null,
+                "Books, manuscripts, PDFs & images", "epub", "md", "markdown", "txt", "pdf", "png", "jpg", "jpeg", "gif", "webp");
+            if (picked.isEmpty()) return;
+            lastDir[0] = picked.get(0).getParent();
+            var files = picked.stream()
+                .sorted((a, b) -> Manuscript.compareNames(a.getFileName().toString(), b.getFileName().toString())).toList();
+            for (Path p : files) {
+                var entry = new RowEntry(p);
+                if (p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".epub")) {
                     try {
-                        var arc = EpubArchive.load(f.toPath());
+                        var arc = EpubArchive.load(p);
                         if (!arc.metadata.title().isBlank()) entry.customTitle = arc.metadata.title();
                         entry.totalChapters = (int) arc.spine.stream()
                             .filter(s -> arc.manifest.containsKey(s.idref) && !arc.manifest.get(s.idref).hasProperty("nav")).count();
@@ -120,12 +115,9 @@ final class MergerDialog {
         };
 
         Runnable addFolder = () -> {
-            var chooser = new JFileChooser(lastDir[0]);
-            chooser.setDialogTitle("Select manuscript or book folder");
-            chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-            if (chooser.showOpenDialog(dialog) != JFileChooser.APPROVE_OPTION) return;
-            lastDir[0] = chooser.getSelectedFile().getParentFile();
-            Path dir = chooser.getSelectedFile().toPath();
+            Path dir = FilePickers.pickDirectory(dialog, "Select manuscript or book folder", lastDir[0]);
+            if (dir == null) return;
+            lastDir[0] = dir.getParent();
             model.addElement(new RowEntry(dir));
             if (titleField.getText().isBlank()) titleField.setText(dir.getFileName().toString());
         };
@@ -226,12 +218,13 @@ final class MergerDialog {
             });
         }));
         coverActions.add(UiTheme.secondaryButton("Pick Image…", () -> {
-            var ch = new JFileChooser(lastDir[0]);
-            ch.setFileFilter(new FileNameExtensionFilter("PNG and JPEG images", "png", "jpg", "jpeg"));
-            if (ch.showOpenDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+            Path imgPath = FilePickers.pickOpenFile(dialog, "Choose Cover Image", lastDir[0],
+                "PNG, JPEG, GIF & WebP images", "png", "jpg", "jpeg", "gif", "webp");
+            if (imgPath != null) {
+                lastDir[0] = imgPath.getParent();
                 try {
-                    customCover[0] = BookFiles.readImage(ch.getSelectedFile().toPath());
-                    coverLabel.setText(ch.getSelectedFile().getName());
+                    customCover[0] = BookFiles.readImage(imgPath);
+                    coverLabel.setText(imgPath.getFileName().toString());
                 } catch (Exception ex) {
                     JOptionPane.showMessageDialog(dialog, ex.getMessage(), "Cover Error", JOptionPane.WARNING_MESSAGE);
                 }
@@ -249,16 +242,11 @@ final class MergerDialog {
                 return;
             }
             String outTitle = titleField.getText().isBlank() ? "Collected Volumes" : titleField.getText().strip();
-            var save = new JFileChooser(lastDir[0]);
-            save.setDialogTitle("Save Combined EPUB");
-            save.setSelectedFile(new File(outTitle.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_") + ".epub"));
-            if (save.showSaveDialog(dialog) != JFileChooser.APPROVE_OPTION) return;
-            Path out = save.getSelectedFile().toPath().toAbsolutePath();
-            if (!out.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".epub")) {
-                out = out.resolveSibling(out.getFileName() + ".epub");
-            }
-            if (Files.exists(out) && JOptionPane.showConfirmDialog(dialog, "Replace existing file?",
-                    "Save EPUB", JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
+            Path out = FilePickers.pickSaveFile(dialog, "Save Combined EPUB", lastDir[0],
+                outTitle.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_") + ".epub", "epub", "EPUB books", "epub");
+            if (out == null) return;
+            out = out.toAbsolutePath();
+            lastDir[0] = out.getParent();
 
             var items = new ArrayList<EpubMerger.SourceItem>();
             for (int i = 0; i < model.size(); i++) {
@@ -373,11 +361,9 @@ final class MergerDialog {
      * Interactive EPUB Splitter Dialog — splits any EPUB into standalone resource-pruned EPUB 3.3 volumes!
      */
     static void showSplitter(Component parent) {
-        var chooser = new JFileChooser();
-        chooser.setDialogTitle("Choose an EPUB to Split into Multiple Books");
-        chooser.setFileFilter(new FileNameExtensionFilter("EPUB books", "epub"));
-        if (chooser.showOpenDialog(parent) != JFileChooser.APPROVE_OPTION) return;
-        Path source = chooser.getSelectedFile().toPath();
+        Path source = FilePickers.pickOpenFile(parent, "Choose an EPUB to Split into Multiple Books", null,
+            "EPUB books", "epub");
+        if (source == null) return;
         EpubArchive arc;
         try {
             arc = EpubArchive.load(source);
@@ -437,11 +423,8 @@ final class MergerDialog {
 
         var splitBtn = UiTheme.primaryButton("Split to Folder…", () -> {
             if (plan.get().isEmpty()) return;
-            var dirPicker = new JFileChooser(source.getParent().toFile());
-            dirPicker.setDialogTitle("Select Output Folder for Split EPUBs");
-            dirPicker.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-            if (dirPicker.showSaveDialog(dialog) != JFileChooser.APPROVE_OPTION) return;
-            Path outDir = dirPicker.getSelectedFile().toPath();
+            Path outDir = FilePickers.pickDirectory(dialog, "Select Output Folder for Split EPUBs", source.getParent());
+            if (outDir == null) return;
             try {
                 var results = EpubMerger.split(source, outDir, plan.get());
                 JOptionPane.showMessageDialog(dialog,

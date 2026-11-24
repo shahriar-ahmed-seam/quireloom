@@ -891,6 +891,10 @@ final class BookFiles {
     }
 
     static Epub.Image optimizeImage(Epub.Image source, int maxDimension, float jpegQuality) throws IOException {
+        return optimizeImage(source, maxDimension, jpegQuality, false);
+    }
+
+    static Epub.Image optimizeImage(Epub.Image source, int maxDimension, float jpegQuality, boolean preserveFormat) throws IOException {
         if (source == null || source.mime().equals("image/svg+xml") || source.mime().equals("image/webp")
                 || source.mime().equals("image/gif")) {
             return source;
@@ -918,7 +922,7 @@ final class BookFiles {
             g.dispose();
         }
         var baos = new ByteArrayOutputStream();
-        if (hasAlpha && source.mime().equals("image/png")) {
+        if (source.mime().equals("image/png") && (hasAlpha || preserveFormat)) {
             ImageIO.write(scaled, "png", baos);
             byte[] out = baos.toByteArray();
             return out.length < source.bytes().length ? new Epub.Image("image/png", out) : source;

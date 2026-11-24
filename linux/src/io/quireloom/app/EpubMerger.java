@@ -412,7 +412,7 @@ final class EpubMerger {
         }
         var parts = new ArrayList<SplitPart>();
         for (int i = 0; i < dedup.size(); i++) {
-            int start = dedup.get(i).spineIndex();
+            int start = i == 0 ? 0 : dedup.get(i).spineIndex();
             int end = (i + 1 < dedup.size()) ? dedup.get(i + 1).spineIndex() : spinePaths.size();
             var ids = new ArrayList<String>();
             for (int k = start; k < end; k++) ids.add(pathToIdref.get(spinePaths.get(k)));

@@ -8,7 +8,7 @@ mkdir -p "$test_dir/classes" "$test_dir/fixtures" "$test_dir/package"
 javac --release 17 -encoding UTF-8 -Xlint:all,-serial -cp "$jar" -d "$test_dir/classes" \
     "$folder/test/io/quireloom/app/ReleaseTest.java"
 java -Djava.awt.headless=true -cp "$jar:$test_dir/classes" io.quireloom.app.ReleaseTest "$test_dir/fixtures"
-dpkg-deb -x "$folder/build/quireloom_1.0.0_all.deb" "$test_dir/package"
+dpkg-deb -x "$folder/build/quireloom_1.0.1_all.deb" "$test_dir/package"
 cli="$test_dir/package/usr/bin/quireloom"
 "$cli" --version
 "$cli" --help >/dev/null

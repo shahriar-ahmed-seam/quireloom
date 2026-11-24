@@ -2,9 +2,7 @@ package io.quireloom.app;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
-import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -104,12 +102,10 @@ final class DoctorDialog {
                 optsPanel.add(ncx);
                 if (JOptionPane.showConfirmDialog(dialog, optsPanel, "Auto-Fix Options",
                         JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION) return;
-                var save = new JFileChooser(repairableEpub.getParent().toFile());
                 String base = repairableEpub.getFileName().toString().replaceFirst("(?i)\\.epub$", "");
-                save.setSelectedFile(new File(base + "-fixed.epub"));
-                if (save.showSaveDialog(dialog) != JFileChooser.APPROVE_OPTION) return;
-                Path out = save.getSelectedFile().toPath();
-                if (!out.toString().toLowerCase().endsWith(".epub")) out = Path.of(out + ".epub");
+                Path out = FilePickers.pickSaveFile(dialog, "Save Repaired EPUB", repairableEpub.getParent(),
+                    base + "-fixed.epub", "epub", "EPUB books", "epub");
+                if (out == null) return;
                 try {
                     var summary = EpubDoctor.repair(repairableEpub, out,
                         new EpubDoctor.RepairOptions(true, orphans.isSelected(), optimize.isSelected(),
@@ -140,11 +136,9 @@ final class DoctorDialog {
     }
 
     static void inspectExternalEpub(Component parent) {
-        var chooser = new JFileChooser();
-        chooser.setDialogTitle("Select an EPUB to inspect with EPUB Doctor");
-        chooser.setFileFilter(new FileNameExtensionFilter("EPUB books", "epub"));
-        if (chooser.showOpenDialog(parent) != JFileChooser.APPROVE_OPTION) return;
-        Path path = chooser.getSelectedFile().toPath();
+        Path path = FilePickers.pickOpenFile(parent, "Select an EPUB to inspect with EPUB Doctor", null,
+            "EPUB books", "epub");
+        if (path == null) return;
         showReport(parent, EpubDoctor.checkEpub(path), path);
     }
 

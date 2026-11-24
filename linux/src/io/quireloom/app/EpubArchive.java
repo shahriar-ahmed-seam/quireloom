@@ -86,6 +86,7 @@ final class EpubArchive {
     final List<SpineEntry> spine = new ArrayList<>();
     final List<TocNode> toc = new ArrayList<>();
     String coverItemId;
+    boolean tocModified;
 
     static EpubArchive load(Path path) throws Exception {
         var archive = new EpubArchive();
@@ -315,8 +316,20 @@ final class EpubArchive {
         }
         String id = uniqueId("item");
         manifest.put(id, new ManifestItem(id, path, mediaType, ""));
-        if (addToSpine) spine.add(new SpineEntry(id, true, ""));
+        if (addToSpine) {
+            spine.add(new SpineEntry(id, true, ""));
+            if ("application/xhtml+xml".equals(mediaType) || "text/html".equals(mediaType)) {
+                toc.add(new TocNode(extractTitle(path, shortTitle(path)), path));
+                tocModified = true;
+            }
+        }
         return id;
+    }
+
+    private static String shortTitle(String path) {
+        int slash = path.lastIndexOf('/');
+        String name = slash >= 0 ? path.substring(slash + 1) : path;
+        return name.replaceFirst("\\.[^.]+$", "");
     }
 
     void removeFile(String path) {
@@ -334,6 +347,33 @@ final class EpubArchive {
             spine.removeIf(s -> s.idref.equals(rid));
             if (rid.equals(coverItemId)) coverItemId = null;
         }
+        if (removeTocReferences(toc, path)) tocModified = true;
+    }
+
+    static boolean removeTocReferences(List<TocNode> nodes, String path) {
+        boolean changed = false;
+        for (var node : nodes) {
+            if (node.path != null && !node.path.isBlank() && BookFiles.stripFragment(node.path).equals(path)) {
+                node.path = "";
+                changed = true;
+            }
+            if (removeTocReferences(node.children, path)) changed = true;
+        }
+        int before = nodes.size();
+        nodes.removeIf(n -> (n.path == null || n.path.isEmpty()) && n.children.isEmpty());
+        return changed || nodes.size() != before;
+    }
+
+    void rebuildTocFromSpine() {
+        toc.clear();
+        int idx = 0;
+        for (var se : spine) {
+            var mi = manifest.get(se.idref);
+            if (mi == null || !mi.isHtml() || mi.hasProperty("nav")) continue;
+            idx++;
+            toc.add(new TocNode(extractTitle(mi.path, "Chapter " + idx), mi.path));
+        }
+        tocModified = true;
     }
 
     String uniqueId(String base) {
@@ -387,7 +427,7 @@ final class EpubArchive {
             if (raw == null) continue;
             try {
                 var src = new Epub.Image(item.mediaType, raw);
-                var opt = BookFiles.optimizeImage(src, maxDimension, quality);
+                var opt = BookFiles.optimizeImage(src, maxDimension, quality, true);
                 if (opt.bytes().length < raw.length) {
                     saved += raw.length - opt.bytes().length;
                     files.put(item.path, opt.bytes());
@@ -536,6 +576,12 @@ final class EpubArchive {
                     if (item.path.equals(finalNavPath)) {
                         navId = item.id;
                         props = mergeProperties(props, Set.of("nav"));
+                        if (tocModified) {
+                            payload = buildNavXhtml(finalNavPath, lang, toc).getBytes(StandardCharsets.UTF_8);
+                        }
+                    }
+                    if ("application/x-dtbncx+xml".equals(item.mediaType) && tocModified) {
+                        payload = buildNcxXml(item.path, metadata.id(), metadata.title(), toc).getBytes(StandardCharsets.UTF_8);
                     }
                     if (written.add(item.path)) {
                         Epub.put(zip, item.path, payload);

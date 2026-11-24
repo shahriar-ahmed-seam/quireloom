@@ -52,7 +52,7 @@ Build the Debian package on a Linux system with JDK 17 or newer and
 
 ```sh
 ./linux/build.sh
-sudo apt install ./linux/build/quireloom_1.0.0_all.deb
+sudo apt install ./linux/build/quireloom_1.0.1_all.deb
 quireloom
 ```
 
@@ -61,8 +61,12 @@ Java runtime, launch it with `java -jar linux/build/quireloom.jar`.
 
 ### Write and edit
 
-1. Choose **File → New Book** to create a portable `.ql` draft. Use **Open
-   Book** to resume a draft or convert an EPUB into editable chapters.
+1. Quireloom opens to a clean blank manuscript by default (or enable **File →
+   Open Last Book on Startup** to reopen your last book automatically). Choose
+   **File → New Blank Manuscript** (`Ctrl+N`) to start fresh, **New Saved Draft
+   (.ql)…** (`Ctrl+Shift+N`) or **Save Draft** (`Ctrl+S`) to save a portable
+   `.ql` file, or **Open Book** (`Ctrl+O`) to resume a draft or convert an EPUB
+   into editable chapters.
 2. Use **Add chapters** to import files, **Paste text** to bring in a
    manuscript, or **New chapter** to start writing. Enable heading detection
    when pasting a manuscript that should become several chapters.
@@ -80,7 +84,7 @@ Ink themes or open the full book preview in a browser.
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+N` / `Ctrl+O` | Create or open a book |
+| `Ctrl+N` / `Ctrl+Shift+N` / `Ctrl+O` | New blank manuscript, new saved `.ql` draft, or open a book |
 | `Ctrl+S` | Save the draft now |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo or redo text edits |
 | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` | Bold, italic, or insert a link |
@@ -189,23 +193,26 @@ quireloom merge volume1.epub volume2.epub --title "Collected Stories" \
 quireloom split omnibus.epub -o ./volumes --by parts
 quireloom split book.epub -o ./chunks --by size --size 5
 
-# Inspect, preflight, and repair a book
+# Inspect, preflight, repair, or export a book or .ql draft
 quireloom info omnibus.epub
 quireloom check omnibus.epub
+quireloom export my-book.ql -o ./book.epub
 quireloom fix old-book.epub -o fixed-book.epub --optimize-images --max-dim 1600
 ```
 
 `quireloom check` returns a nonzero exit code when it finds errors, so it can
-be used in CI. Run `quireloom --help` for supported options, including
-`--lang`, `--pdf-images`, and `--no-dividers`.
+be used in CI. `check` and `info` also accept `.ql` draft files. Run
+`quireloom --help` for supported options, including `--lang`, `--pdf-images`,
+and `--no-dividers`.
 
 ## Build and verify
 
 ### Linux
 
-Use JDK 17 or newer and `dpkg-deb`. Install `poppler-utils` for PDF import.
-The regression script builds the package, exercises the EPUB engine and
-desktop workspace, and checks the packaged CLI.
+Use JDK 17 or newer and `dpkg-deb`. Install `poppler-utils` for PDF import and
+`zenity` for native GTK/XDG file dialogs. The regression script builds the
+package, exercises the EPUB engine and desktop workspace, and checks the
+packaged CLI.
 
 ```sh
 ./linux/build.sh

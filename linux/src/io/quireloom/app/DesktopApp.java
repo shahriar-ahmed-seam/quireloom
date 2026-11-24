@@ -4,7 +4,6 @@ import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.event.MenuEvent;
 import javax.swing.event.MenuListener;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
@@ -20,25 +19,33 @@ import java.util.List;
 import java.util.prefs.Preferences;
 
 public final class DesktopApp {
-    static final String VERSION = "1.0.0";
-    private static final Map<Path, JFrame> windows = new LinkedHashMap<>();
-    private static final Map<Path, Workspace> workspaces = new LinkedHashMap<>();
+    static final String VERSION = "1.0.1";
+    private static final String PREF_OPEN_LAST = "openLastOnStartup";
+    private static final List<Session> sessions = new ArrayList<>();
     private static Path directory;
-    private static File lastFolder;
     private static final int RECENT_LIMIT = 10;
+
+    private static final class Session {
+        Path path;
+        FileChannel lockChannel;
+        Path lockPath;
+        Workspace workspace;
+        JFrame frame;
+    }
 
     public static void main(String[] args) {
         if (args.length >= 1) {
             String cmd = args[0];
             if (cmd.equals("--version") || cmd.equals("-v")) {
-                System.out.println("Quireloom " + VERSION + " for Linux");
+                String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+                System.out.println("Quireloom " + VERSION + (os.contains("win") ? " for Windows" : " for Linux"));
                 return;
             }
             if (cmd.equals("--help") || cmd.equals("-h") || cmd.equals("help")) {
                 printCliHelp();
                 return;
             }
-            if (Set.of("build", "merge", "split", "check", "fix", "info").contains(cmd)) {
+            if (Set.of("build", "merge", "split", "check", "fix", "info", "export").contains(cmd)) {
                 System.exit(runCli(cmd, Arrays.copyOfRange(args, 1, args.length)));
                 return;
             }
@@ -65,11 +72,12 @@ public final class DesktopApp {
             Usage:
               quireloom [files...]                         Open Quireloom desktop studio
               quireloom build <inputs...> [options]        Build EPUB 3.3 from folder/MD/TXT/PDF/images/EPUBs
+              quireloom export <draft.ql> [options]        Export a Quireloom .ql draft to EPUB 3.3
               quireloom merge <epubs...> [options]         Losslessly merge EPUB 2/3 books into an omnibus
               quireloom split <in.epub> -o <dir> [options] Split an EPUB into standalone volumes
-              quireloom check <book.epub>                  Run EPUB Doctor preflight validation
+              quireloom check <book.epub|draft.ql>         Run EPUB Doctor preflight validation
               quireloom fix <in.epub> -o <out.epub> [opts] Auto-repair, upgrade to EPUB 3.3 & optimize images
-              quireloom info <book.epub>                   Print book metadata, stats & table of contents
+              quireloom info <book.epub|draft.ql>          Print book metadata, stats & table of contents
 
             Common build / merge options:
               -o, --output <file>         Output .epub path
@@ -97,6 +105,7 @@ public final class DesktopApp {
         try {
             return switch (cmd) {
                 case "build", "merge" -> cliBuildOrMerge(cmd.equals("merge"), args);
+                case "export" -> cliExportDraft(args);
                 case "split" -> cliSplit(args);
                 case "check" -> cliCheck(args);
                 case "fix" -> cliFix(args);
@@ -107,6 +116,27 @@ public final class DesktopApp {
             System.err.println("Error: " + error.getMessage());
             return 1;
         }
+    }
+
+    private static int cliExportDraft(String[] args) throws Exception {
+        Path input = null;
+        Path output = null;
+        for (int i = 0; i < args.length; i++) {
+            String a = args[i];
+            if (a.equals("-o") || a.equals("--output")) output = Path.of(nextArg(args, ++i, a));
+            else if (input == null) input = Path.of(a);
+            else throw new IllegalArgumentException("Unexpected argument: " + a);
+        }
+        if (input == null) throw new IllegalArgumentException("Provide a .ql draft file to export.");
+        Path resolved = input.toAbsolutePath().normalize();
+        if (output == null) {
+            String stem = resolved.getFileName().toString().replaceFirst("(?i)\\.ql$", "");
+            output = resolved.getParent().resolve(stem + ".epub");
+        }
+        Draft draft = Draft.read(resolved);
+        draft.export(output);
+        System.out.println("Exported " + output.toAbsolutePath().normalize());
+        return 0;
     }
 
     private static int cliBuildOrMerge(boolean isMerge, String[] args) throws Exception {
@@ -195,9 +225,12 @@ public final class DesktopApp {
         return 0;
     }
 
-    private static int cliCheck(String[] args) {
-        if (args.length < 1) throw new IllegalArgumentException("Provide an EPUB file to check.");
-        var report = EpubDoctor.checkEpub(Path.of(args[0]));
+    private static int cliCheck(String[] args) throws Exception {
+        if (args.length < 1) throw new IllegalArgumentException("Provide an EPUB or .ql draft file to check.");
+        Path target = Path.of(args[0]);
+        var report = target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ql")
+            ? EpubDoctor.checkDraft(Draft.read(target))
+            : EpubDoctor.checkEpub(target);
         System.out.println("EPUB Doctor — " + report.targetName());
         for (var e : report.stats().entrySet()) System.out.printf("  %-18s %s%n", e.getKey() + ":", e.getValue());
         System.out.println();
@@ -238,8 +271,24 @@ public final class DesktopApp {
     }
 
     private static int cliInfo(String[] args) throws Exception {
-        if (args.length < 1) throw new IllegalArgumentException("Provide an EPUB file.");
+        if (args.length < 1) throw new IllegalArgumentException("Provide an EPUB or .ql draft file.");
         Path path = Path.of(args[0]);
+        if (path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ql")) {
+            Draft d = Draft.read(path);
+            System.out.println("Title:      " + (d.title().isBlank() ? "(untitled)" : d.title()));
+            if (!d.metadata().subtitle().isBlank()) System.out.println("Subtitle:   " + d.metadata().subtitle());
+            System.out.println("Author:     " + d.author());
+            System.out.println("Language:   " + d.language());
+            System.out.println("Theme:      " + d.options().theme().label);
+            System.out.println("Chapters:   " + d.chapters().size());
+            int words = d.chapters().stream().mapToInt(c -> Manuscript.wordCount(c.body())).sum();
+            System.out.println("Words:      " + words);
+            for (int i = 0; i < d.chapters().size(); i++) {
+                var c = d.chapters().get(i);
+                System.out.println("  " + (i + 1) + ". " + c.title() + " (" + c.role().label + ")");
+            }
+            return 0;
+        }
         var arc = EpubArchive.load(path);
         System.out.println("Title:      " + arc.metadata.title());
         if (!arc.metadata.subtitle().isBlank()) System.out.println("Subtitle:   " + arc.metadata.subtitle());
@@ -278,26 +327,48 @@ public final class DesktopApp {
 
     static void toggleDarkMode(boolean dark) {
         UiTheme.setDark(dark);
-        for (var entry : workspaces.entrySet()) {
-            entry.getValue().refreshThemeColors();
+        for (var session : sessions) {
+            session.workspace.refreshThemeColors();
+            SwingUtilities.updateComponentTreeUI(session.frame);
+            session.frame.repaint();
         }
-        for (var frame : windows.values()) {
-            SwingUtilities.updateComponentTreeUI(frame);
-            frame.repaint();
+    }
+
+    private static Path resolveAppDataDir() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("win")) {
+            String localAppData = System.getenv("LOCALAPPDATA");
+            if (localAppData != null && !localAppData.isBlank()) {
+                return Path.of(localAppData, "Quireloom");
+            }
+            return Path.of(System.getProperty("user.home"), "AppData", "Local", "Quireloom");
         }
+        String xdg = System.getenv("XDG_DATA_HOME");
+        Path data = xdg != null && !xdg.isBlank() && Path.of(xdg).isAbsolute()
+            ? Path.of(xdg) : Path.of(System.getProperty("user.home"), ".local", "share");
+        return data.resolve("quireloom");
     }
 
     private static void launch(String[] args) {
         configureTheme();
-        String xdg = System.getenv("XDG_DATA_HOME");
-        Path data = xdg != null && !xdg.isBlank() && Path.of(xdg).isAbsolute()
-            ? Path.of(xdg) : Path.of(System.getProperty("user.home"), ".local", "share");
-        directory = data.resolve("quireloom");
+        directory = resolveAppDataDir();
         try {
             Files.createDirectories(directory.resolve("books"));
             Files.createDirectories(directory.resolve("locks"));
             if (args.length == 0) {
-                open(directory.resolve("draft.ql"), List.of(), "Manuscript");
+                boolean openLast = preferences().getBoolean(PREF_OPEN_LAST, false);
+                boolean openedLast = false;
+                if (openLast) {
+                    for (String recentPath : recent()) {
+                        Path candidate = Path.of(recentPath);
+                        if (Files.isRegularFile(candidate) && isBook(candidate)) {
+                            openBook(candidate);
+                            openedLast = true;
+                            break;
+                        }
+                    }
+                }
+                if (!openedLast) openUntitled(List.of());
             } else {
                 var extra = new ArrayList<Path>();
                 for (String arg : args) {
@@ -305,12 +376,12 @@ public final class DesktopApp {
                     if (isBook(path)) openBook(path);
                     else extra.add(path);
                 }
-                if (!extra.isEmpty()) open(directory.resolve("draft.ql"), extra, "Manuscript");
+                if (!extra.isEmpty()) openUntitled(extra);
             }
         } catch (Exception error) {
             failure(null, error);
-            if (windows.isEmpty()) {
-                try { open(directory.resolve("draft.ql"), List.of(), "Manuscript"); }
+            if (sessions.isEmpty()) {
+                try { openUntitled(List.of()); }
                 catch (Exception ignored) { System.exit(1); }
             }
         }
@@ -379,13 +450,36 @@ public final class DesktopApp {
         for (int i = 0; i < Math.min(paths.size(), RECENT_LIMIT); i++) preferences().put("book" + i, paths.get(i));
     }
 
+    private static void clearRecent() {
+        for (int i = 0; i < RECENT_LIMIT; i++) preferences().remove("book" + i);
+    }
+
+    private static Session findSessionByPath(Path path) {
+        if (path == null) return null;
+        for (var s : sessions) {
+            if (path.equals(s.path)) return s;
+        }
+        return null;
+    }
+
+    private static Session findSessionByWorkspace(Workspace w) {
+        for (var s : sessions) {
+            if (s.workspace == w) return s;
+        }
+        return null;
+    }
+
+    private static void openUntitled(List<Path> inputs) {
+        show(null, null, null, Draft.empty(), true, inputs, "New Manuscript");
+    }
+
     private static void open(Path path, List<Path> inputs, String label) throws IOException {
         path = path.toAbsolutePath().normalize();
-        JFrame existing = windows.get(path);
+        Session existing = findSessionByPath(path);
         if (existing != null) {
-            existing.setExtendedState(existing.getExtendedState() & ~Frame.ICONIFIED);
-            existing.toFront();
-            existing.requestFocus();
+            existing.frame.setExtendedState(existing.frame.getExtendedState() & ~Frame.ICONIFIED);
+            existing.frame.toFront();
+            existing.frame.requestFocus();
             return;
         }
         // Keep lock files cleanly in Quireloom's own locks directory — never clutter user folders!
@@ -396,37 +490,110 @@ public final class DesktopApp {
         var channel = FileChannel.open(lock, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         try {
             if (channel.tryLock() == null) throw new IOException(label + " is already open in another Quireloom window.");
-            show(path, channel, lock, inputs, label);
+            Draft draft;
+            boolean readable = true;
+            try {
+                draft = Draft.read(path);
+            } catch (IOException error) {
+                if (!path.equals(directory.resolve("draft.ql"))) throw error;
+                draft = Draft.empty();
+                readable = false;
+            }
+            // If only a single untouched blank window is open, replace it cleanly when opening a book.
+            Session blankToClose = null;
+            if (inputs.isEmpty() && sessions.size() == 1) {
+                Session only = sessions.get(0);
+                if (only.path == null && only.workspace.isCleanEmpty() && !only.workspace.isBusy()) {
+                    blankToClose = only;
+                }
+            }
+            show(path, channel, lock, draft, readable, inputs, label);
+            if (blankToClose != null) disposeSession(blankToClose);
         } catch (IOException | RuntimeException error) {
             channel.close();
             throw error;
         }
     }
 
-    static void chooseBook(Component parent, boolean create) {
-        var picker = new JFileChooser(lastFolder);
-        picker.setDialogTitle(create ? "Create a New Quireloom Draft" : "Open Book");
-        if (create) {
-            picker.setFileFilter(new FileNameExtensionFilter("Quireloom drafts (.ql)", "ql"));
-        } else {
-            picker.setFileFilter(new FileNameExtensionFilter("EPUB books and Quireloom drafts", "epub", "ql"));
-            picker.setAccessory(new JLabel("<html>EPUB opens as a rich editable manuscript<br>preserving formatting, cover &amp; images.<br>For raw XHTML/CSS editing, use<br>Publishing → Package Studio.</html>"));
+    static boolean bindWorkspaceDraft(Workspace workspace, Path destination, boolean rememberBook) {
+        Session session = findSessionByWorkspace(workspace);
+        if (session == null) return false;
+        Path target = destination.toAbsolutePath().normalize();
+        Session owner = findSessionByPath(target);
+        if (owner != null && owner != session) {
+            failure(session.frame, new IOException(target.getFileName() + " is already open in another Quireloom window."));
+            return false;
         }
-        int choice = create ? picker.showSaveDialog(parent) : picker.showOpenDialog(parent);
-        if (choice != JFileChooser.APPROVE_OPTION) return;
-        lastFolder = picker.getCurrentDirectory();
-        Path path = picker.getSelectedFile().toPath();
+        if (target.equals(session.path)) {
+            workspace.attachDraftPath(target);
+            workspace.saveNow();
+            if (rememberBook) remember(target);
+            return true;
+        }
+        try {
+            Path lockDir = directory.resolve("locks");
+            Files.createDirectories(lockDir);
+            String lockName = UUID.nameUUIDFromBytes(target.toString().getBytes(StandardCharsets.UTF_8)) + ".lock";
+            Path newLock = lockDir.resolve(lockName);
+            var newChannel = FileChannel.open(newLock, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            try {
+                if (newChannel.tryLock() == null) {
+                    throw new IOException(target.getFileName() + " is already open in another Quireloom window.");
+                }
+                workspace.snapshot().save(target);
+            } catch (IOException | RuntimeException ex) {
+                newChannel.close();
+                throw ex;
+            }
+            if (session.lockChannel != null) {
+                try { session.lockChannel.close(); } catch (IOException ignored) {}
+            }
+            if (session.lockPath != null) {
+                try { Files.deleteIfExists(session.lockPath); } catch (IOException ignored) {}
+            }
+            session.path = target;
+            session.lockChannel = newChannel;
+            session.lockPath = newLock;
+            workspace.attachDraftPath(target);
+            String label = target.getFileName().toString();
+            String bookTitle = workspace.snapshot().title().strip();
+            session.frame.setTitle((bookTitle.isEmpty() ? label : bookTitle + " (" + label + ")") + " — Quireloom");
+            if (rememberBook) remember(target);
+            return true;
+        } catch (IOException error) {
+            failure(session.frame, error);
+            return false;
+        }
+    }
+
+    private static void disposeSession(Session session) {
+        sessions.remove(session);
+        session.frame.dispose();
+        if (session.lockChannel != null) {
+            try { session.lockChannel.close(); } catch (IOException ignored) {}
+        }
+        if (session.lockPath != null) {
+            try { Files.deleteIfExists(session.lockPath); } catch (IOException ignored) {}
+        }
+    }
+
+    static void chooseBook(Component parent, boolean create) {
+        Path path;
+        if (create) {
+            path = FilePickers.pickSaveFile(parent, "Create a New Quireloom Draft", null,
+                "Manuscript.ql", "ql", "Quireloom drafts (.ql)", "ql");
+        } else {
+            path = FilePickers.pickOpenFileWithNote(parent, "Open Book", null,
+                "<html>EPUB opens as a rich editable manuscript<br>preserving formatting, cover &amp; images.<br>For raw XHTML/CSS editing, use<br>Publishing → Package Studio.</html>",
+                "EPUB books and Quireloom drafts", "epub", "ql");
+        }
+        if (path == null) return;
         try {
             if (create) {
-                if (!path.toString().toLowerCase(Locale.ROOT).endsWith(".ql")) path = Path.of(path + ".ql");
-                Files.createFile(path);
-                try { Draft.empty().save(path); }
-                catch (IOException error) { Files.deleteIfExists(path); throw error; }
+                Draft.empty().save(path);
             }
             if (!isBook(path)) throw new IOException("Choose an EPUB or .ql draft.");
             openBook(path);
-        } catch (FileAlreadyExistsException error) {
-            failure(parent, new IOException("A draft with that name already exists. Choose Open Book to resume it."));
         } catch (IOException error) {
             failure(parent, error);
         }
@@ -437,48 +604,47 @@ public final class DesktopApp {
         else JOptionPane.showMessageDialog(parent, error.getMessage(), "Could not open book", JOptionPane.ERROR_MESSAGE);
     }
 
-    private static void show(Path path, FileChannel lockFile, Path lockPath, List<Path> inputs, String label) throws IOException {
-        Draft draft;
-        boolean readable = true;
-        try {
-            draft = Draft.read(path);
-        } catch (IOException error) {
-            if (!path.equals(directory.resolve("draft.ql"))) throw error;
-            draft = Draft.empty();
-            readable = false;
-        }
-        var workspace = new Workspace(path, draft, readable);
+    private static void show(Path path, FileChannel lockFile, Path lockPath, Draft draft,
+                             boolean saveEnabled, List<Path> inputs, String label) {
+        var workspace = new Workspace(path, draft, saveEnabled);
         var window = new JFrame(label + " — Quireloom");
-        windows.put(path, window);
-        workspaces.put(path, workspace);
+        var session = new Session();
+        session.path = path;
+        session.lockChannel = lockFile;
+        session.lockPath = lockPath;
+        session.workspace = workspace;
+        session.frame = window;
+        sessions.add(session);
+        workspace.setSaveAsHandler(dest -> bindWorkspaceDraft(workspace, dest, true));
+
         try (var icon = DesktopApp.class.getResourceAsStream("icon.png")) {
             if (icon != null) window.setIconImage(ImageIO.read(icon));
         } catch (IOException ignored) {}
 
         window.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
-        Runnable closeWindow = () -> workspace.close(() -> {
-            windows.remove(path);
-            workspaces.remove(path);
-            window.dispose();
-            try { lockFile.close(); } catch (IOException ignored) {}
-            try { Files.deleteIfExists(lockPath); } catch (IOException ignored) {}
-        });
+        Runnable closeWindow = () -> workspace.close(() -> disposeSession(session));
         window.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) { closeWindow.run(); }
         });
         workspace.addPropertyChangeListener("bookTitle", event -> {
             String t = event.getNewValue().toString().strip();
-            window.setTitle((t.isEmpty() ? label : t + " (" + label + ")") + " — Quireloom");
+            String currentLabel = session.path == null ? label : session.path.getFileName().toString();
+            window.setTitle((t.isEmpty() ? currentLabel : t + " (" + currentLabel + ")") + " — Quireloom");
         });
         if (!draft.title().isBlank()) window.setTitle(draft.title() + " (" + label + ") — Quireloom");
         window.setContentPane(workspace);
 
         var menus = new PublishingMenu(window, workspace);
         var file = new JMenu("File");
-        var newItem = new JMenuItem("New Book…");
-        newItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_N, InputEvent.CTRL_DOWN_MASK));
-        newItem.addActionListener(e -> chooseBook(window, true));
-        file.add(newItem);
+        var newBlankItem = new JMenuItem("New Blank Manuscript");
+        newBlankItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_N, InputEvent.CTRL_DOWN_MASK));
+        newBlankItem.addActionListener(e -> openUntitled(List.of()));
+        file.add(newBlankItem);
+
+        var newSavedItem = new JMenuItem("New Saved Draft (.ql)…");
+        newSavedItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_N, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK));
+        newSavedItem.addActionListener(e -> chooseBook(window, true));
+        file.add(newSavedItem);
 
         var openItem = new JMenuItem("Open Book…");
         openItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK));
@@ -487,17 +653,29 @@ public final class DesktopApp {
 
         var recentBooks = new JMenu("Open Recent");
         file.add(recentBooks);
+        var openLastToggle = new JCheckBoxMenuItem("Open Last Book on Startup", preferences().getBoolean(PREF_OPEN_LAST, false));
+        openLastToggle.addActionListener(e -> preferences().putBoolean(PREF_OPEN_LAST, openLastToggle.isSelected()));
+        file.add(openLastToggle);
+
         file.addMenuListener(new MenuListener() {
             public void menuSelected(MenuEvent event) {
                 recentBooks.removeAll();
                 for (String value : recent()) {
                     Path source = Path.of(value);
-                    var item = new JMenuItem(source.getFileName() + "  —  " + source.getParent());
+                    boolean exists = Files.isRegularFile(source);
+                    var item = new JMenuItem(source.getFileName() + "  —  " + source.getParent() + (exists ? "" : " (missing)"));
+                    item.setEnabled(exists);
                     item.addActionListener(e -> {
                         try { openBook(source); }
                         catch (IOException error) { failure(window, error); }
                     });
                     recentBooks.add(item);
+                }
+                if (recentBooks.getItemCount() > 0) {
+                    recentBooks.addSeparator();
+                    var clearItem = new JMenuItem("Clear Recent Books");
+                    clearItem.addActionListener(e -> clearRecent());
+                    recentBooks.add(clearItem);
                 }
                 recentBooks.setEnabled(recentBooks.getItemCount() > 0);
             }
@@ -506,10 +684,14 @@ public final class DesktopApp {
         });
 
         file.addSeparator();
-        var saveItem = new JMenuItem("Save Draft Now");
+        var saveItem = new JMenuItem("Save Draft");
         saveItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK));
         saveItem.addActionListener(e -> workspace.saveNow());
         file.add(saveItem);
+
+        var saveAsItem = new JMenuItem("Save Draft As…");
+        saveAsItem.addActionListener(e -> workspace.saveDraftAs());
+        file.add(saveAsItem);
 
         var metaItem = new JMenuItem("Book Metadata & Series…");
         metaItem.addActionListener(e -> workspace.openMetadataDialog());
@@ -540,11 +722,11 @@ public final class DesktopApp {
         books.addMenuListener(new MenuListener() {
             public void menuSelected(MenuEvent event) {
                 books.removeAll();
-                for (var entry : windows.values()) {
-                    var item = new JCheckBoxMenuItem(entry.getTitle(), entry == window);
+                for (var entry : sessions) {
+                    var item = new JCheckBoxMenuItem(entry.frame.getTitle(), entry.frame == window);
                     item.addActionListener(e -> {
-                        entry.setExtendedState(entry.getExtendedState() & ~Frame.ICONIFIED);
-                        entry.toFront();
+                        entry.frame.setExtendedState(entry.frame.getExtendedState() & ~Frame.ICONIFIED);
+                        entry.frame.toFront();
                     });
                     books.add(item);
                 }

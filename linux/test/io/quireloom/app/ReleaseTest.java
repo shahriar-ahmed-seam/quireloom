@@ -269,11 +269,124 @@ public final class ReleaseTest {
         check(repairSummary.upgradedFromEpub2() && EpubDoctor.checkEpub(repairedEpub).healthy(),
             "EPUB Doctor Auto-Fix upgrades EPUB 2 cleanly to EPUB 3.3");
 
-        // 14. CLI end-to-end check.
+        // 14. CLI end-to-end check (check, info, build, split, fix, and .ql draft export/check/info).
         check(DesktopApp.runCli("check", new String[]{omnibus.toString()}) == 0, "CLI check succeeds on valid omnibus");
         check(DesktopApp.runCli("info", new String[]{omnibus.toString()}) == 0, "CLI info succeeds");
+        check(DesktopApp.runCli("check", new String[]{draftPath.toString()}) == 0, "CLI check succeeds on .ql draft");
+        check(DesktopApp.runCli("info", new String[]{draftPath.toString()}) == 0, "CLI info succeeds on .ql draft");
+        Path cliExported = directory.resolve("Export-cli-ql.epub");
+        check(DesktopApp.runCli("export", new String[]{draftPath.toString(), "-o", cliExported.toString()}) == 0
+            && EpubDoctor.checkEpub(cliExported).healthy(), "CLI export .ql draft produces healthy EPUB");
+        Path cliBuilt = directory.resolve("Export-cli-build.epub");
+        check(DesktopApp.runCli("build", new String[]{folderBook.toString(), "--title", "CLI Folder", "-o", cliBuilt.toString()}) == 0
+            && EpubDoctor.checkEpub(cliBuilt).healthy(), "CLI build from folder produces healthy EPUB");
+        Path cliFixed = directory.resolve("Export-cli-fixed.epub");
+        check(DesktopApp.runCli("fix", new String[]{epub.toString(), "-o", cliFixed.toString()}) == 0
+            && EpubDoctor.checkEpub(cliFixed).healthy(), "CLI fix upgrades EPUB 2 cleanly");
 
-        // 15. Desktop Workspace UI + Undo + Split/Merge + Book Switch + Light & Dark visual renders!
+        // 15. Regression checks for PART + BACKMATTER TOC, leading frontmatter split, Package delete/TOC rebuild, PNG optimization, and FilePickers root avoidance.
+        var partBook = new Draft(
+            Epub.Metadata.basic("urn:uuid:55555555-2222-3333-4444-555555555555", "Part & Backmatter", "Author", "en"),
+            List.of(
+                new Epub.Chapter("Preface", "Front.", true, Map.of(), Epub.ChapterRole.FRONTMATTER, false),
+                new Epub.Chapter("Part I", "Intro", true, Map.of(), Epub.ChapterRole.PART, false),
+                new Epub.Chapter("Chapter 1", "Body", true, Map.of(), Epub.ChapterRole.CHAPTER, false),
+                new Epub.Chapter("Acknowledgments", "Thanks.", true, Map.of(), Epub.ChapterRole.BACKMATTER, false)
+            ), null, Epub.Options.editorial());
+        Path partEpub = directory.resolve("Export-parts-backmatter.epub");
+        partBook.export(partEpub);
+        try (var zip = new ZipFile(partEpub.toFile())) {
+            String navXml = new String(zip.getInputStream(zip.getEntry("EPUB/nav.xhtml")).readAllBytes(), StandardCharsets.UTF_8);
+            check(navXml.contains("</ol></li><li><a href=\"chapter-4.xhtml\">Acknowledgments</a>"),
+                "BACKMATTER closes open PART in nav.xhtml");
+            String ncxXml = new String(zip.getInputStream(zip.getEntry("EPUB/toc.ncx")).readAllBytes(), StandardCharsets.UTF_8);
+            check(ncxXml.contains("</navPoint><navPoint id=\"np-4\"") && ncxXml.contains("Acknowledgments"),
+                "BACKMATTER closes open PART in toc.ncx");
+        }
+
+        // Verify autoSplitByParts keeps leading frontmatter (Preface before Part I).
+        Path leadingEpub = directory.resolve("Leading-split.epub");
+        try (var zip = new ZipOutputStream(Files.newOutputStream(leadingEpub))) {
+            entry(zip, "mimetype", "application/epub+zip");
+            entry(zip, "META-INF/container.xml", """
+                <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+                  <rootfiles><rootfile full-path="EPUB/book.opf" media-type="application/oebps-package+xml"/></rootfiles>
+                </container>""");
+            entry(zip, "EPUB/book.opf", """
+                <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+                  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                    <dc:title>Split Test</dc:title><dc:language>en</dc:language>
+                    <dc:identifier id="id">urn:uuid:66666666-2222-3333-4444-555555555555</dc:identifier>
+                  </metadata>
+                  <manifest>
+                    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+                    <item id="pre" href="preface.xhtml" media-type="application/xhtml+xml"/>
+                    <item id="p1" href="part1.xhtml" media-type="application/xhtml+xml"/>
+                    <item id="p2" href="part2.xhtml" media-type="application/xhtml+xml"/>
+                  </manifest>
+                  <spine><itemref idref="pre"/><itemref idref="p1"/><itemref idref="p2"/></spine>
+                </package>""");
+            entry(zip, "EPUB/nav.xhtml", """
+                <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+                  <head><title>TOC</title></head>
+                  <body><nav epub:type="toc"><ol>
+                    <li><a href="part1.xhtml">Part 1</a></li>
+                    <li><a href="part2.xhtml">Part 2</a></li>
+                  </ol></nav></body>
+                </html>""");
+            entry(zip, "EPUB/preface.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Preface</title></head><body><p>Lead</p></body></html>");
+            entry(zip, "EPUB/part1.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Part 1</title></head><body><p>One</p></body></html>");
+            entry(zip, "EPUB/part2.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Part 2</title></head><body><p>Two</p></body></html>");
+        }
+        var leadParts = EpubMerger.autoSplitByParts(EpubArchive.load(leadingEpub));
+        check(leadParts.size() == 2 && leadParts.get(0).spineIdrefs().equals(List.of("pre", "p1")),
+            "autoSplitByParts keeps leading frontmatter spine items in first volume");
+
+        // Verify Package removeFile regenerates nav/ncx and Doctor detects/repairs broken nav links.
+        var editArc = EpubArchive.load(partEpub);
+        editArc.removeFile("EPUB/chapter-3.xhtml");
+        Path editedPartEpub = directory.resolve("Export-removed-chapter.epub");
+        editArc.saveAsEpub3(editedPartEpub, true);
+        var editedDocReport = EpubDoctor.checkEpub(editedPartEpub);
+        check(editedDocReport.healthy() && editedDocReport.findings().stream().noneMatch(f -> f.message().contains("Broken TOC link")),
+            "EpubArchive.removeFile removes deleted file from nav.xhtml and toc.ncx");
+
+        // Verify PNG optimization in EpubArchive preserves PNG mime type.
+        var largePngImg = new BufferedImage(1200, 1200, BufferedImage.TYPE_INT_RGB);
+        var lg = largePngImg.createGraphics();
+        for (int y = 0; y < 1200; y += 20) {
+            lg.setColor(new Color((y * 7) % 255, (y * 13) % 255, (y * 3) % 255));
+            lg.fillRect(0, y, 1200, 20);
+        }
+        lg.dispose();
+        Path bigPngPath = directory.resolve("big.png");
+        ImageIO.write(largePngImg, "png", bigPngPath.toFile());
+        String bigKey = "img-" + UUID.randomUUID() + ".png";
+        var imgBook = new Draft(Epub.Metadata.basic("urn:uuid:77777777-2222-3333-4444-555555555555", "PNG Check", "A", "en"),
+            List.of(new Epub.Chapter("Ch", "![Pic](" + bigKey + ")", true, Map.of(bigKey, BookFiles.cover(bigPngPath)))),
+            null, Epub.Options.editorial());
+        Path imgEpub = directory.resolve("Export-png-opt.epub");
+        imgBook.export(imgEpub);
+        var optArc = EpubArchive.load(imgEpub);
+        optArc.optimizeAllImages(400, 0.8f);
+        Path optImgEpub = directory.resolve("Export-png-opt-done.epub");
+        optArc.saveAsEpub3(optImgEpub, true);
+        var optLoaded = EpubArchive.load(optImgEpub);
+        check(optLoaded.manifest.values().stream().filter(i -> i.path.endsWith(".png"))
+            .allMatch(i -> "image/png".equals(i.mediaType)), "EpubArchive.optimizeAllImages keeps PNG media-type matching .png filename");
+
+        // Verify FilePickers never defaults to root "/".
+        Path pickedInit = FilePickers.resolveInitialDirectory(Path.of("/"));
+        check(pickedInit.getParent() != null && Files.isDirectory(pickedInit),
+            "FilePickers never starts in root /");
+
+        // 16. Desktop Workspace UI + Untitled Blank Mode + Undo + Split/Merge + Book Switch + Light & Dark visual renders!
+        onEdt(() -> {
+            var untitled = new Workspace(null, Draft.empty(), false);
+            check(untitled.isCleanEmpty(), "Untitled startup workspace begins clean and empty");
+            untitled.close(() -> {});
+            return null;
+        });
         exerciseBookSwitch(directory, epub);
         exerciseWorkspace(directory, List.of(txt, broken, md, epub), designedCover);
         System.out.println(checks + " assertions passed");

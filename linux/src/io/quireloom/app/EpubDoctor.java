@@ -158,7 +158,7 @@ final class EpubDoctor {
                     findings.add(new Finding(Severity.ERROR, "OCF", "mimetype entry is compressed",
                         "EPUB OCF requires STORED (uncompressed) mimetype. Run Auto-Fix."));
                 } else {
-                    String content = new String(zip.getInputStream(first).readAllBytes(), StandardCharsets.US_ASCII);
+                    String content = new String(BookFiles.limited(zip.getInputStream(first), 128), StandardCharsets.US_ASCII);
                     if (!"application/epub+zip".equals(content)) {
                         findings.add(new Finding(Severity.ERROR, "OCF", "Invalid mimetype content", "Expected exact \"application/epub+zip\"."));
                     } else {
@@ -200,6 +200,33 @@ final class EpubDoctor {
                 findings.add(new Finding(Severity.ERROR, "Navigation", "EPUB 3 missing navigation document (properties=\"nav\")", "Run Auto-Fix to generate nav.xhtml."));
             } else if (hasNav) {
                 findings.add(new Finding(Severity.PASS, "Navigation", "EPUB 3 navigation document present", ""));
+            }
+
+            // Check nav.xhtml links for broken TOC targets.
+            var navParser = BookFiles.newXmlParser();
+            for (var item : arc.manifest.values()) {
+                if (!item.hasProperty("nav") || !arc.files.containsKey(item.path)) continue;
+                try {
+                    Document navDoc = navParser.parse(new ByteArrayInputStream(BookFiles.injectHtmlEntitiesIfNeeded(arc.files.get(item.path))));
+                    for (var a : BookFiles.elementsByLocalName(navDoc, "a")) {
+                        String href = a.getAttribute("href").strip();
+                        if (href.isEmpty() || href.startsWith("#") || href.startsWith("http://")
+                                || href.startsWith("https://") || href.startsWith("mailto:")) continue;
+                        try {
+                            String target = BookFiles.resolveHref(item.path, href);
+                            if (!arc.files.containsKey(target)) {
+                                findings.add(new Finding(Severity.WARNING, "Navigation",
+                                    "Broken TOC link \"" + href + "\" in " + item.path, ""));
+                            }
+                        } catch (IOException ex) {
+                            findings.add(new Finding(Severity.WARNING, "Navigation",
+                                "Invalid TOC link \"" + href + "\" in " + item.path, ""));
+                        }
+                    }
+                } catch (Exception ex) {
+                    findings.add(new Finding(Severity.ERROR, "Navigation",
+                        "Malformed XML in navigation document " + item.path, ex.getMessage()));
+                }
             }
 
             // Check manifest files exist & find orphan files not in manifest.
@@ -336,8 +363,25 @@ final class EpubDoctor {
             optImages = res.imagesOptimized();
             bytesSaved = res.bytesSaved();
         }
+        pruneBrokenTocNodes(arc.toc, arc);
         arc.saveAsEpub3(output, options.includeNcx());
         return new RepairSummary(orphansRemoved, optImages, bytesSaved, upgraded);
+    }
+
+    private static void pruneBrokenTocNodes(List<EpubArchive.TocNode> nodes, EpubArchive arc) {
+        for (var node : nodes) {
+            if (node.path != null && !node.path.isBlank()) {
+                String target = BookFiles.stripFragment(node.path);
+                if (!arc.files.containsKey(target)) {
+                    node.path = "";
+                    arc.tocModified = true;
+                }
+            }
+            pruneBrokenTocNodes(node.children, arc);
+        }
+        int before = nodes.size();
+        nodes.removeIf(n -> (n.path == null || n.path.isEmpty()) && n.children.isEmpty());
+        if (nodes.size() != before) arc.tocModified = true;
     }
 
     private static void checkImageDimensions(String label, Epub.Image image, boolean isCover, List<Finding> findings) {

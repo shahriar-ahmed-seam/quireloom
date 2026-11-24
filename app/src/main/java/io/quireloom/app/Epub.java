@@ -335,7 +335,7 @@ final class Epub {
                 }
                 tp.append("</section>");
                 put(zip, "EPUB/titlepage.xhtml", page(bookTitle, lang, tp.toString()));
-                tocEntries.add(new TocEntry("Title Page", "titlepage.xhtml", false));
+                tocEntries.add(new TocEntry("Title Page", "titlepage.xhtml", false, false));
             }
 
             if (opts.includeCopyright()) {
@@ -360,7 +360,7 @@ final class Epub {
                 }
                 cp.append("</section>");
                 put(zip, "EPUB/copyright.xhtml", page("Copyright", lang, cp.toString()));
-                tocEntries.add(new TocEntry("Copyright", "copyright.xhtml", false));
+                tocEntries.add(new TocEntry("Copyright", "copyright.xhtml", false, false));
             }
 
             var writtenImages = new HashSet<String>();
@@ -382,7 +382,8 @@ final class Epub {
                 addPage(manifest, spine, name);
                 put(zip, "EPUB/" + name + ".xhtml", page(chapter.title(), lang, render(chapter, opts)));
                 boolean isPart = chapter.role() == ChapterRole.PART;
-                tocEntries.add(new TocEntry(chapter.title(), name + ".xhtml", isPart));
+                boolean isBackmatter = chapter.role() == ChapterRole.BACKMATTER;
+                tocEntries.add(new TocEntry(chapter.title(), name + ".xhtml", isPart, isBackmatter));
                 if (startHref == null && (chapter.role() == ChapterRole.CHAPTER || chapter.role() == ChapterRole.PART)) {
                     startHref = name + ".xhtml";
                 }
@@ -455,7 +456,7 @@ final class Epub {
         }
     }
 
-    private record TocEntry(String title, String href, boolean isPart) {}
+    private record TocEntry(String title, String href, boolean isPart, boolean isBackmatter) {}
 
     private static String buildNav(String lang, List<TocEntry> entries, boolean hasCover,
                                    boolean hasTitlePage, String startHref) {
@@ -472,6 +473,12 @@ final class Epub {
                     .append(xml(entry.title())).append("</a>");
                 inPart = true;
                 partHasChildren = false;
+            } else if (inPart && entry.isBackmatter() && partHasChildren) {
+                toc.append("</ol></li>");
+                inPart = false;
+                partHasChildren = false;
+                toc.append("<li><a href=\"").append(entry.href()).append("\">")
+                    .append(xml(entry.title())).append("</a></li>");
             } else if (inPart) {
                 if (!partHasChildren) {
                     toc.append("<ol>");
@@ -504,6 +511,7 @@ final class Epub {
         var navMap = new StringBuilder();
         int playOrder = 0;
         boolean inPart = false;
+        boolean partHasChildren = false;
         boolean hasNested = false;
         for (TocEntry entry : entries) {
             playOrder++;
@@ -513,8 +521,19 @@ final class Epub {
                     .append("\"><navLabel><text>").append(xml(entry.title()))
                     .append("</text></navLabel><content src=\"").append(entry.href()).append("\"/>");
                 inPart = true;
+                partHasChildren = false;
+            } else if (inPart && entry.isBackmatter() && partHasChildren) {
+                navMap.append("</navPoint>");
+                inPart = false;
+                partHasChildren = false;
+                navMap.append("<navPoint id=\"np-").append(playOrder).append("\" playOrder=\"").append(playOrder)
+                    .append("\"><navLabel><text>").append(xml(entry.title()))
+                    .append("</text></navLabel><content src=\"").append(entry.href()).append("\"/></navPoint>");
             } else {
-                if (inPart) hasNested = true;
+                if (inPart) {
+                    hasNested = true;
+                    partHasChildren = true;
+                }
                 navMap.append("<navPoint id=\"np-").append(playOrder).append("\" playOrder=\"").append(playOrder)
                     .append("\"><navLabel><text>").append(xml(entry.title()))
                     .append("</text></navLabel><content src=\"").append(entry.href()).append("\"/></navPoint>");
